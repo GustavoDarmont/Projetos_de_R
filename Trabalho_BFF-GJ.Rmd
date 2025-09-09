@@ -1,0 +1,187 @@
+---
+title: "Trabalho BFF-GJ: Análise de MEIs"
+author: "Fernando Soares, Felipe Lobo, Bianca Fialho, Gustavo Darmont, Julia Teixeira"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+---
+
+```{r setup, include=FALSE}
+# Configurações globais do R Markdown
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+# Lista de pacotes necessários para a análise
+pacotes_necessarios <- c("dplyr", "readr", "knitr", "ggplot2", "scales")
+
+# Verifica se os pacotes estão instalados e os instala caso não estejam
+for (pacote in pacotes_necessarios) {
+  if (!require(pacote, character.only = TRUE)) {
+    install.packages(pacote, dependencies = TRUE)
+  }
+  library(pacote, character.only = TRUE)
+}
+
+```
+
+
+### 1. Quem são os Top 3 CNAEs/ocupações do MEI na localidade? Quais contagens?
+
+As atividades mais comuns entre os MEIs no município são relacionadas a serviços de beleza, promoção de vendas e fornecimento de alimentos. Portanto, são esses três CNAEs lideram o ranking de registros.
+
+
+```{r top_3_cnaes}
+# Carregar os dados do município
+tryCatch({
+  df_municipio <- read_csv("municipio.csv")
+  
+  # Encontrar os 3 principais CNAEs
+  top_3_municipio <- df_municipio %>%
+    arrange(desc(TOTAL)) %>%
+    head(3)
+  
+  # Adicionar descrições para clareza
+  descricoes <- c(
+    "Atividades de cabeleireiros, manicure e pedicure",
+    "Promoção de vendas",
+    "Fornecimento de alimentos preparados para consumo domiciliar"
+  )
+  
+  top_3_formatado <- top_3_municipio %>%
+    mutate(Descricao = descricoes) %>%
+    select(CNAE, Descricao, TOTAL)
+  
+  # Exibir a tabela formatada com kable
+  kable(top_3_formatado, 
+        caption = "Top 3 CNAEs/Ocupações de MEIs no Município do Rio de Janeiro",
+        col.names = c("CNAE", "Descrição da Atividade", "Total de MEIs"))
+
+}, error = function(e) {
+  "Arquivo 'municipio.csv' não encontrado."
+})
+```
+
+---
+
+### 2. Há concentração em poucos CNAEs ou dispersão entre vários?
+
+Para medir se as atividades estão concentradas ou espalhadas, usamos dois critérios, sendo eles:
+
+1 . Percentual dos Top 3: participação dos três CNAEs mais comuns em relação ao total.
+
+2 . Índice HHI: quanto mais baixo, mais variado é o conjunto de atividades.
+
+O resultado mostrou que os três principais CNAEs não representam a maioria (apenas 16%) dos registros e o índice ficou baixo. Isso significa que existe muita dispersão, ou seja, os MEIs estão distribuídos em várias atividades.
+
+```{r analise_dispersao}
+# Calcular o percentual e o HHI para o município
+tryCatch({
+  total_meis_municipio <- sum(df_municipio$TOTAL)
+  total_top_3_municipio <- sum(top_3_municipio$TOTAL)
+  percentual_top_3 <- (total_top_3_municipio / total_meis_municipio) * 100
+  
+  # Cálculo do HHI
+  df_municipio_hhi <- df_municipio %>%
+    mutate(proportion = TOTAL / total_meis_municipio)
+  hhi_municipio <- sum(df_municipio_hhi$proportion^2) * 10000
+
+  cat(sprintf("Percentual de concentração nos 3 principais CNAEs: %.2f%%\n", percentual_top_3))
+  cat(sprintf("Índice de Dispersão (HHI): %.2f\n", hhi_municipio))
+
+}, error = function(e) {
+  "Não foi possível calcular a dispersão. Verifique os dados."
+})
+```
+
+**Conclusão:** Com os 3 principais CNAEs representando apenas **`r I(round(percentual_top_3, 2))`%** do total e um HHI baixo de **`r I(round(hhi_municipio, 2))`**, concluímos que há uma **grande dispersão** de atividades de MEIs no município, indicando um ecossistema empreendedor diversificado.
+
+---
+
+### 3. O perfil encontrado faz sentido para a economia local?
+
+O perfil faz sentido para o município do Rio de Janeiro, já que é uma cidade movimentada, onde comércio e serviços são o centro da economia. A rotina urbana, somada ao pouco tempo livre e à grande circulação de pessoas, ajuda a explicar por que esses são os três CNAEs mais comuns.
+
+Cabeleireiros: A cultura de estética e autocuidado é muito presente no Rio. A cidade tem uma vida social intensa, marcada por eventos, praias e encontros profissionais. Isso mantém a procura alta por cabeleireiros e manicures em praticamente todos os bairros, já que o cuidado com a aparência é visto como parte do dia a dia.
+
+Promoção de vendas/Panfletagem: O Rio é uma cidade enorme, com milhões de habitantes e áreas de grande circulação, como o Centro, a Zona Norte e pontos de transporte público. Esse fluxo constante de pessoas torna a panfletagem e a promoção de vendas uma estratégia eficiente para o comércio local. Muitas lojas e empresas contratam MEIs para distribuir panfletos, divulgar promoções ou fazer ações de marketing direto, já que a chance de alcançar consumidores nessas regiões é muito alta.
+
+Alimentação: A rotina corrida dos moradores, somada ao crescimento dos aplicativos de entrega, fez a procura por comida pronta disparar. Além de ser um setor acessível para quem quer começar a empreender, ele atende a um público que busca praticidade. Isso explica por que pequenos negócios de quentinhas, marmitas e delivery se espalharam tanto pela cidade, fortalecendo também o comércio de bairro.
+
+---
+
+### 4. O que mudaria se o recorte fosse a UF em vez do município?
+
+A análise do estado (UF) revela um perfil similar, mas com uma mudança no top 3. Promoção de vendas foi substituido por comércio no segunda lugar, oque mostra certa concentração das operações de marketing na capital, que não parece se verificar para o estado como um todo.
+
+```{r comparacao_uf}
+tryCatch({
+  # Carregar e analisar dados do estado
+  df_uf <- read_csv("UF.csv")
+  top_3_uf <- df_uf %>% arrange(desc(TOTAL)) %>% head(3)
+  
+  # Dados para a tabela
+  tabela_municipio_uf <- data.frame(
+    Métrica = c("CNAE #1", "CNAE #2", "CNAE #3"),
+    `Município (Rio de Janeiro)` = c("9602501 (Cabeleireiros...)", "7319002 (Promoção de vendas)", "5620104 (Alimentação...)"),
+    `Estado (UF)` = c("9602501 (Cabeleireiros...)", "4781400 (Com. Var. Vestuário)", "5620104 (Alimentação...)")
+  )
+  
+  kable(tabela_municipio_uf, caption = "Comparação do Top 3 de CNAEs: Município vs. Estado")
+
+}, error = function(e) {
+  "Arquivo 'UF.csv' não encontrado para comparação."
+})
+```
+O gráfico mostra que apesar da mudança no top 3, as caractéristicas de concentração de atividade são bastante semelhantes.
+
+```{r grafico_comparativo_dispersao, fig.align='center'}
+# Gerar os dados para o gráfico comparativo
+tryCatch({
+  # Função para extrair dados do gráfico
+  get_plot_data <- function(df, grupo) {
+    total_meis <- sum(df$TOTAL)
+    df_sorted <- df %>%
+      arrange(desc(TOTAL)) %>%
+      mutate(cumulative_percentage = cumsum(TOTAL) / total_meis * 100)
+    
+    pontos <- c(10, 20, 50, 100)
+    data.frame(
+      Grupo = grupo,
+      Nivel = factor(paste("Top", pontos), levels = paste("Top", pontos)),
+      Percentual = df_sorted$cumulative_percentage[pontos]
+    )
+  }
+  
+  dados_grafico <- rbind(
+    get_plot_data(df_municipio, "Rio de Janeiro"),
+    get_plot_data(df_uf, "RJ")
+  )
+  
+  # Plotar o gráfico
+  ggplot(dados_grafico, aes(x = Nivel, y = Percentual, fill = Grupo)) +
+    geom_bar(stat = "identity", position = position_dodge()) +  
+    geom_text(aes(label = sprintf("%.1f%%", Percentual)), position = position_dodge(width = 0.9), vjust = -0.5) +
+    scale_y_continuous(labels = scales::percent_format(scale = 1), limits = c(0, 100)) +
+    labs(title = "Comparativo de Concentração: Município vs. Estado", y = "Percentual Acumulado de MEIs", x = "") +
+    theme_minimal() +
+    scale_fill_manual(values = c("darkgreen", "lightgreen"))
+
+}, error = function(e) {
+  "Não foi possível gerar o gráfico comparativo."
+})
+```
+
+---
+
+### 5. Quais limitações dos dados ou do processo de coleta vocês observaram?
+
+Algumas limitações ficaram evidentes para nós:
+
+1. O CSV contempla apenas um momento no tempo, não sendo possível avaliar a evolução das atividades ao longo dos anos.
+
+2. Nossa análise compara apenas o município com o estado, deixando de lado variáveis como bairro ou região, o que poderia ser particularmente relevante para o município do Rio de Janeiro.
+
+3. A base tem apenas o número de CNAEs por região, dificultando uma análise mais completa apartir de outras variáveis.
+
