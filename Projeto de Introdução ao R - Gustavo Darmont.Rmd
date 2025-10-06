@@ -1,0 +1,452 @@
+---
+title: "Projeto de Introdução ao R"
+author: "Gustavo Darmont de Faria Lima"
+date: "2025-10-04"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+    code_folding: show
+    df_print: paged
+---
+
+### Resumo:
+Este projeto busca, a partir da análise de 30 ações do mercado brasileiro, investigar se a classificação dessas empresas, baseada em métricas de risco-retorno, apresenta relação direta com a tradicional divisão por setores da economia. A metodologia consiste em extrair 5 anos de dados de preços (Yahoo Finance) e fatores de risco (NEFIN) para calcular alguns indicadores de cada ativo (Retorno, Volatilidade e Índice de Sharpe). Em seguida, o algoritmo de aprendizado não supervisionado K-Means é aplicado para agrupar os ativos, e os clusters resultantes são visualmente comparados com a classificação setorial oficial da B3. Por fim, o modelo de Fama-MacBeth é utilizado para testar quais fatores e características, incluindo os próprios clusters, explicam a variação nos retornos dos ativos. 
+
+
+### Fontes de Dados:
+Este projeto utiliza duas fontes de dados distintas para a análise, com o objetivo de combinar informações de mercado com fatores de risco estimados pela academia.
+
+1. Preços das Ações: Yahoo Finance
+Os dados históricos de preços de fechamento ajustados para as 30 ações selecionadas foram coletados diretamente da plataforma Yahoo Finance. A extração foi automatizada por meio da API disponibilizada pelo pacote yfR da linguagem R. Os dados correspondem ao período de 5 anos imediatamente anterior à data de execução do código, garantindo uma análise atualizada.
+
+2. Fatores de Risco (Modelo Fama-French): NEFIN/USP
+Os fatores de risco do mercado brasileiro (Mkt-Rf, SMB, HML, WML) e a taxa livre de risco (Risk_Free) foram obtidos a partir da base de dados disponibilizada publicamente pelo Núcleo de Pesquisas em Economia Financeira (NEFIN), um centro de estudos vinculado à Faculdade de Economia, Administração e Contabilidade (FEA) da Universidade de São Paulo (USP).
+
+O arquivo nefin_factors.csv utilizado neste projeto foi baixado diretamente do site da instituição e representa uma "fotografia" dos dados disponíveis na data do download.
+
+Origem: https://nefin.com.br/resources/risk_factors/nefin_factors.csv
+
+Data do Download: 04/10/2025
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+# Instala e carrega os pacotes necessários
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, tidyquant, yfR, readr, cluster, ggrepel, patchwork)
+library(dplyr)
+library(tibble)
+library(lubridate)
+```
+
+## 1ª Etapa: Montando a Base do Projeto
+
+
+### 1.1 Definição dos parâmetros
+
+```{r parametros}
+# Período de análise de 5 anos
+data_fim <- Sys.Date()
+data_inicio <- data_fim - years(5)
+
+# Lista de tickers de 30 empresas do Ibovespa
+tickers <- c(
+  "VALE3.SA", "CMIN3.SA", "BRAP4.SA", "SBSP3.SA", "SAPR11.SA", "AESB3.SA", "CSMG3.SA", "ORVR3.SA", "RDOR3.SA", "PARD3.SA", "FLRY3.SA", "SUZB3.SA", "KLB11.SA", "ITUB4.SA", "BBDC4.SA", "BPAC11.SA", "ITSA4.SA", "BBAS3.SA", "BBDC3.SA", "PETR4.SA", "PETR3.SA", "PRIO3.SA", "VBBR3.SA", "UGPA3.SA", "ELET3.SA", "EQTL3.SA", "ENEV3.SA", "CPLE6.SA", "CMIG4.SA"
+)
+
+cat("Periodo de Analise:", format(data_inicio, "%Y-%m-%d"), "ate", format(data_fim, "%Y-%m-%d"))
+
+# Cria o dataframe de mapeamento Ticker -> Setor. Feito a mão por limitações do Web Scraping do site da B3
+setores_df <- tibble::tribble(
+  ~ticker,    ~Setor,
+  "VALE3.SA", "Mineração",
+  "CMIN3.SA", "Mineração",
+  "BRAP4.SA", "Mineração",
+  "SBSP3.SA", "Água e Saneamento",
+  "SAPR11.SA", "Água e Saneamento",
+  "AESB3.SA", "Água e Saneamento",
+  "RDOR3.SA", "Serv.Méd.Hospit.,Análises e Diag.",
+  "PARD3.SA", "Serv.Méd.Hospit.,Análises e Diag.",
+  "FLRY3.SA", "Serv.Méd.Hospit.,Análises e Diag.",
+  "SUZB3.SA", "Madeira e Papel",
+  "KLB11.SA", "Madeira e Papel",
+  "CSMG3.SA", "Água e Saneamento",
+  "ORVR3.SA", "Água e Saneamento",
+  "ITUB4.SA", "Intermediários Financeiros",
+  "BBDC4.SA", "Intermediários Financeiros",
+  "BPAC11.SA", "Intermediários Financeiros",
+  "ITSA4.SA", "Intermediários Financeiros",
+  "BBAS3.SA", "Intermediários Financeiros",
+  "BBDC3.SA", "Intermediários Financeiros",
+  "PETR4.SA", "Petróleo, Gás e Biocombustíveis",
+  "PETR3.SA", "Petróleo, Gás e Biocombustíveis",
+  "PRIO3.SA", "Petróleo, Gás e Biocombustíveis",
+  "VBBR3.SA", "Petróleo, Gás e Biocombustíveis",
+  "UGPA3.SA", "Petróleo, Gás e Biocombustíveis",
+  "ELET3.SA", "Energia Elétrica",
+  "EQTL3.SA", "Energia Elétrica",
+  "ENEV3.SA", "Energia Elétrica",
+  "CPLE6.SA", "Energia Elétrica",
+  "CMIG4.SA", "Energia Elétrica"
+)
+
+# Cria um dataframe resumido por setor
+resumo_setores <- setores_df %>%
+  group_by(Setor) %>%
+  summarise(
+    Ativos = paste(ticker, collapse = ", "),
+    Numero_de_Ativos = n()
+  ) %>%
+  # Desagrupa para futuras operações
+  ungroup()
+
+cat("Tabela Resumo - Empresas por Setor:\n")
+print(resumo_setores)
+```
+
+### 1.2 Coleta dos preços das ações (fonte: Yahoo Finance)
+
+O código abaixo utiliza o pacote `yfR` para baixar os preços de fechamento ajustados para cada um dos tickers definidos.
+
+```{r coleta_precos}
+# Baixa os dados de preços ajustados
+dados_precos <- yf_get(
+  tickers = tickers,
+  first_date = data_inicio,
+  last_date = data_fim
+)
+
+# Organiza os dados em formato 'wide' (cada coluna é um ticker)
+precos_wide <- dados_precos %>%
+  select(ref_date, ticker, price_adjusted) %>%
+  pivot_wider(names_from = ticker, values_from = price_adjusted) %>%
+  arrange(ref_date) %>%
+  rename(Data = ref_date)
+
+cat("Dimensões da tabela de preços:", dim(precos_wide), "\n")
+cat("Tabela de Preços dos Ativos:\n")
+head(precos_wide)
+```
+
+### 1.3 Coleta dos fatores de risco para o modelo Fama-French (fonte: NEFIN USP)
+
+Acessamos os fatores de risco do mercado brasileiro calculados pelo NEFIN, a partir do arquivo csv baixado do site da instituição e armazenado no mesmo diretório do projeto. Usaremos os 3 fatores clássicos (Mercado, Tamanho e Valor) mais o fator de Momento.
+
+```{r coleta_fatores_csv_corrigido}
+# Carrega os dados do arquivo CSV local
+fatores_nefin_raw <- read_csv("nefin_factors.csv")
+
+# Limpeza e formatação dos dados
+fatores_nefin <- fatores_nefin_raw %>%
+  select(-1) %>%
+  set_names(c("Data", "Mkt_Rf", "SMB", "HML", "WML", "IML", "Risk_Free")) %>% 
+  mutate(
+    Data = as.Date(Data, format="%d/%m/%Y"),
+    across(-Data, as.numeric)
+  ) %>%
+  drop_na()
+
+# Filtra para o período de análise
+fatores_nefin_filtrado <- fatores_nefin %>%
+  filter(Data >= data_inicio & Data <= data_fim)
+
+cat("Tabela Resumo - Indicadores de Fama-French:\n")
+head(fatores_nefin_filtrado)
+```
+
+## 2ª Etapa: Análise Exploratória e Engenharia de Features
+
+Vamos calcular os retornos diários, as métricas de risco (volatilidade, Sharpe) e preparar o dataset final que será usado para a clusterização.
+
+
+### 2.1 Cálculo dos retornos diários dos ativos
+
+Vamos converter a série de preços de cada ativo em uma série de retornos diários. Usaremos retornos logarítmicos, usuais em modelagem financeira.
+
+```{r calculo_retornos}
+# Transforma os dados de preços para o formato longo (long format) para facilitar o cálculo
+precos_long <- precos_wide %>%
+  pivot_longer(-Data, names_to = "ticker", values_to = "price_adjusted")
+
+# Calcula os retornos diários para cada ticker
+retornos_diarios <- precos_long %>%
+  group_by(ticker) %>%
+  tq_transmute(
+    select = price_adjusted,
+    mutate_fun = periodReturn,
+    period = "daily",
+    type = "log"
+  ) %>%
+  # Retorna para o formato wide, similar à tabela de preços original
+  pivot_wider(names_from = "ticker", values_from = "daily.returns") %>%
+  drop_na()
+
+cat("Dimensões da tabela de retornos diários:", dim(retornos_diarios), "\n")
+cat("Tabela de Retornos Diários dos Ativos:\n")
+head(retornos_diarios)
+```
+
+### 2.2 Unindo retornos e fatores de risco
+
+Utilizaremos a função `left_join` do pacote `dplyr` para combinar a tabela `retornos_diarios` com a `fatores_nefin_filtrado`, de forma a garantir que todos os dias com registro de retorno de ativos sejam mantidos na base principal, adicionando as informações dos fatores de risco correspondentes àquelas datas.
+
+```{r join_dados}
+# Une a tabela de retornos com a de fatores usando a coluna "Data"
+dados_mestre <- left_join(retornos_diarios, fatores_nefin_filtrado, by = "Data")
+
+# Exibe as primeiras linhas e as dimensões do dataset mestre para verificação
+cat("Dimensões do dataset mestre:", dim(dados_mestre), "\n")
+# O head() mostrará as colunas de retorno dos ativos seguidas pelas colunas dos fatores
+
+cat("Dados Consolidados:\n")
+head(dados_mestre)
+```
+
+### 2.3 Construíndo os indicadores para a clusterização
+
+```{r engenharia_features}
+# Calcula a taxa livre de risco (Risk-Free) média anualizada
+rf_media_anual <- mean(dados_mestre$Risk_Free, na.rm = TRUE) * 252
+
+# Reformata os dados de retornos para o formato longo
+retornos_long <- retornos_diarios %>%
+  pivot_longer(-Data, names_to = "ticker", values_to = "retorno_diario")
+
+# Calcula as métricas anualizadas para cada ativo
+features_cluster <- retornos_long %>%
+  group_by(ticker) %>%
+  summarise(
+    retorno_medio_diario = mean(retorno_diario, na.rm = TRUE),
+    volatilidade_diaria = sd(retorno_diario, na.rm = TRUE)
+  ) %>%
+  mutate(
+    RetornoAnual = retorno_medio_diario * 252,
+    VolAnual = volatilidade_diaria * sqrt(252),
+    Sharpe = (RetornoAnual - rf_media_anual) / VolAnual
+  ) %>%
+  select(ticker, RetornoAnual, VolAnual, Sharpe) %>%
+  filter(is.finite(Sharpe)) %>%
+  arrange(desc(Sharpe))
+
+cat("Tabela de Indicadores para Clusterização:\n")
+print(features_cluster)
+```
+
+## 3ª Etapa: Análise de Clusterização
+
+
+### 3.1 Determinando o número ótimo de clusters (k)
+
+Utilizaremos do *Método do Cotovelo* e da *Análise de Silhueta* para identificar o número ideal de grupos para nossos dados.
+
+```{r determina_k}
+# Seleciona apenas as colunas numéricas que serão usadas como features
+dados_cluster <- features_cluster %>%
+  select(RetornoAnual, VolAnual, Sharpe)
+
+# Converte e adequa os dados para uma matriz
+dados_matriz <- as.matrix(dados_cluster)
+rownames(dados_matriz) <- features_cluster$ticker
+dados_escalados <- scale(dados_matriz)
+
+# Calcula WCSS (Inércia) e Silhueta para diferentes valores de k
+k_valores <- 2:10   # Testando entre 2 e 10 clusters
+inercia <- numeric(length(k_valores))
+silhueta_media <- numeric(length(k_valores))
+
+for (i in seq_along(k_valores)) {
+  k <- k_valores[i]
+  set.seed(123) # Garante que os resultados sejam reprodutíveis
+  
+  kmeans_resultado <- kmeans(dados_escalados, centers = k, nstart = 25)
+  
+  inercia[i] <- kmeans_resultado$tot.withinss
+  
+  silhueta_resultado <- silhouette(kmeans_resultado$cluster, dist(dados_escalados))
+  silhueta_media[i] <- mean(silhueta_resultado[, 3])
+}
+
+# Cria um dataframe com os resultados
+resultados_k <- tibble(
+  k = k_valores,
+  inercia = inercia,
+  silhueta = silhueta_media
+)
+
+
+## Plotando os gráficos para análise:
+
+# Gráfico do Método do Cotovelo
+p1 <- ggplot(resultados_k, aes(x = k, y = inercia)) +
+  geom_line(color = "blue", size = 1) +
+  geom_point(color = "blue", size = 3) +
+  labs(title = "Método do Cotovelo (Elbow Method)",
+       subtitle = "Procurando o 'cotovelo' na curva",
+       x = "Número de Clusters (k)",
+       y = "Inércia (WCSS)") +
+  theme_minimal()
+
+# Gráfico da Análise de Silhueta
+p2 <- ggplot(resultados_k, aes(x = k, y = silhueta)) +
+  geom_line(color = "red", size = 1) +
+  geom_point(color = "red", size = 3) +
+  labs(title = "Análise de Silhueta",
+       subtitle = "Procurando o valor máximo",
+       x = "Número de Clusters (k)",
+       y = "Score Médio de Silhueta") +
+  theme_minimal()
+
+p1 + p2
+```
+
+Com base nos gráficos, o valor de **k=3** parece ser a escolha ideal, pois representa o ponto de maior score de silhueta e um "cotovelo" siginifcativo.
+
+
+### 3.2 Aplicando o K-means e analisando os clusters
+
+Agora que definimos k=3, rodamos a parte final do algoritmo para analisarmos os grupos formados.
+
+```{r aplica_kmeans}
+k_otimo <- 3
+
+set.seed(123)
+kmeans_final <- kmeans(dados_escalados, centers = k_otimo, nstart = 25)
+
+# Adiciona o número do cluster ao nosso dataframe de indicadores original
+features_com_cluster <- features_cluster %>%
+  mutate(Cluster = factor(kmeans_final$cluster))
+
+cat("Composição dos Clusters por Ativo:\n")
+print(features_com_cluster, n = Inf)
+
+
+# Calcula as características médias de cada cluster
+resumo_clusters <- features_com_cluster %>%
+  group_by(Cluster) %>%
+  summarise(
+    N_Ativos = n(),
+    Retorno_Medio = mean(RetornoAnual),
+    Volatilidade_Media = mean(VolAnual),
+    Sharpe_Medio = mean(Sharpe)
+  ) %>%
+  arrange(desc(Sharpe_Medio))
+
+cat("\n\nCaracterísticas Médias de Cada Cluster:\n")
+print(resumo_clusters)
+
+
+# Visualiza os clusters no gráfico de Risco vs. Retorno
+grafico_clusters <- ggplot(features_com_cluster, aes(x = VolAnual, y = RetornoAnual, color = Cluster, label = ticker)) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  geom_text_repel(size = 3, show.legend = FALSE, max.overlaps = 20, fontface = "bold") +
+  labs(
+    title = "Visualização dos 3 Clusters de Ativos",
+    subtitle = "Gráfico de Risco (Volatilidade Anual) vs. Retorno Anual",
+    x = "Volatilidade Anualizada",
+    y = "Retorno Anualizado"
+  ) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_x_continuous(labels = scales::percent) +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.justification = "center",) +
+  guides(color = guide_legend(nrow = 1, byrow = TRUE, title.position = "left"))
+
+print(grafico_clusters)
+```
+
+### 3.3 Análise Visual - Clusters vs. Setores
+
+Criamos a seguir o novo gráfico para comparar a estrutura dos clusters com a divisão setorial dos ativos e assim avaliar semelhanças e diferenças.
+
+```{r grafico_cluster_setor}
+# Junta a informação de setor com a de clusters
+features_com_setor <- left_join(features_com_cluster, setores_df, by = "ticker")
+
+# Gera o novo gráfico
+grafico_final_cluster_setor <- ggplot(features_com_setor, 
+                                      aes(x = VolAnual, y = RetornoAnual, label = ticker)) +
+  # Desenha as elipses (curvas fechadas) para cada Cluster
+  stat_ellipse(
+    aes(group = Cluster), 
+    type = 't', 
+    level = 0.95, 
+    color = "darkgray", 
+    linetype = "dashed",
+    geom = "path"
+  ) +
+  # Adiciona os pontos, agora coloridos por Setor
+  geom_point(aes(color = Setor), size = 2.5, alpha = 0.8) +
+  geom_text_repel(
+    fontface = "bold",
+    size = 2,
+    max.overlaps = 20
+  ) +
+  labs(
+    title = "Análise de Clusters vs. Setores da Economia",
+    subtitle = "Elipses representam os Clusters (agrupamento por risco-retorno).\nCores representam os Setores Econômicos.",
+    x = "Volatilidade Anualizada",
+    y = "Retorno Anualizado"
+  ) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_x_continuous(labels = scales::percent) +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  guides(color = guide_legend(nrow = 3))
+
+print(grafico_final_cluster_setor)
+```
+
+### Análise dos gráficos
+Os gráficos acima se complementam para um entendimento visual da relação entre os clusters de ativos e os setores associados a eles. O primeiro tem a função de evidenciar os clusters formados, mas a partir do segundo, pode-se avaliar se existem semelhanças na relação risco-retorno entre empresas de um mesmo segmento de mercado. Enquanto que para Água e Saneamento, por exemplo, parece haver uma tendência para o índice de Sharpe, outros setores como o de Petróleo, Gás e Biocombustíveis ou Energia Elétrica apresentam empresas compondo diferentes clusters, o que torna fraca a evidência de relação entre o setor da empresa e a relação risco-retorno de seu papel. Pode-se esperar que outras variáveis não observadas impactam demasiadamente esse fator para os diversos papéis analisados, indicando que uma análise quantitativa e um teste de hipóteses seriam necessários para investigar com maior robustês a relação que buscamos estudar.
+
+
+## Glossário de Variáveis
+Esta seção descreve os principais dataframes e variáveis criados e utilizados ao longo da análise para garantir a clareza e a reprodutibilidade do estudo.
+
+### Principais Dataframes
+setores_df: Tabela de mapeamento criada manualmente que associa cada ticker de ação ao seu respectivo Setor econômico, conforme a classificação da B3.
+
+precos_wide: Dataframe onde cada coluna representa o ticker de uma ação e as linhas contêm a série temporal de seus preços de fechamento ajustados para o período de análise.
+
+retornos_diarios: Estrutura similar à precos_wide, mas contendo os retornos diários logarítmicos de cada ativo, que são a base para os cálculos de risco e retorno.
+
+fatores_nefin_filtrado: Tabela contendo os fatores de risco do mercado brasileiro (Fama-French) e a taxa de juros livre de risco, já filtrada para o período de análise do projeto.
+
+features_com_setor: O dataframe final utilizado para a clusterização e visualização. Nele, cada linha corresponde a um único ativo, e as colunas contêm as métricas de desempenho e risco calculadas, bem como a classificação de setor e o cluster atribuído.
+
+### Principais Variáveis (Colunas)
+ticker: O código de negociação do ativo na bolsa de valores brasileira (B3). Ex: "VALE3.SA".
+
+Setor: A classificação setorial do ativo, conforme definido pela B3. Ex: "Mineração".
+
+RetornoAnual: O retorno médio anualizado do ativo. Foi calculado a partir da média dos retornos diários logarítmicos, multiplicada por 252 (número aproximado de dias de pregão em um ano).
+
+VolAnual: A volatilidade (risco) anualizada do ativo. Medida pelo desvio padrão dos retornos diários, multiplicada pela raiz quadrada de 252. Representa o grau de variação do retorno de um ativo.
+
+Sharpe: O Índice de Sharpe do ativo. É uma métrica que mede o retorno ajustado ao risco, calculada como:
+(RetornoAnual - TaxaLivreDeRiscoMédiaAnual) / VolAnual.
+Um valor mais alto indica um melhor desempenho para a quantidade de risco assumido.
+
+Cluster: O grupo numérico (neste caso, de 1 a 3) ao qual o ativo foi atribuído pelo algoritmo de aprendizado não supervisionado K-Means, com base em suas características de RetornoAnual, VolAnual e Sharpe.
+
+
+## Uso de Inteligência Artificial
+Foi utilizada a ferramenta de IA Gemini para auxiliar na revisão e adequação deste projeto aos critérios da disciplina. O prompt principal utilizado foi:
+
+"Faça uma revisão do projeto Rmd em anexo conforme critérios de avaliação do trabalho na foto em anexo e orientações apresentados a seguir, detalhando o que e como deve ser alterado para se adequar ao escopo do que foi solicitado."
+
+Além disso, foi feito uso da mesma ferramenta para debug e busca por soluções inteligêntes a problemas pontuais ao longo da construção do código do trabalho. Exemplo de feature recomendada pela IA: uso do pacote pacman para carregamento dos demais pacotes.
+
+
+## Próximos Passos:
+
+As evoluções mapeadas para o trabalho consistem de:
+  1. Testar outros formatos de curvas fechadas que melhor representem os clusters do último gráfico
+  2. Analisar quantitativamente a relação entre clusters de retorno-volatilidade e setores da economia e explicar qualitativamente os dados observados
+  3. Construir e rodar o modelo de precificação de ativos de Fama-MacBeth para entender quais fatores explicam o retorno dos ativos e investigar semelhanças intra-setoriais
+  4. Fazer uma análise estatística dos setores frente aos indicadores financeiros observados
+  5. Realizar um teste de hipóteses para avaliar significância das diferenças nos indicadores entre setores da economia, ou seja, se as clusterizações são motivadas por diferenças setoriais.
