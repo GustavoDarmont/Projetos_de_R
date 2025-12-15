@@ -1,1 +1,1 @@
-Dashboard do projeto final da disciplina: https://gustavodarmont.shinyapps.io/Dashboard_de_Clusters/
+Dashboard desenvolvido como projeto final da disciplina: https://gustavodarmont.shinyapps.io/Dashboard_de_Clusters/
